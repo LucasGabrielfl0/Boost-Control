@@ -18,7 +18,7 @@ IMAGEM PCB?
 
 
 
-## Digital Controller
+## Discrete Controller
 Finally, the discrete controller was implemented using an ESP32 
 write controller equation here
 ```
