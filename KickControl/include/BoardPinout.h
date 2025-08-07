@@ -12,7 +12,12 @@
 /*============================== Control Pins ============================*/
 #define INPUT_BUTTON_PIN    GPIO_NUM_5      // Input button, User activates kick
 #define PULSE_PIN           GPIO_NUM_23     // Digital out Pin: 100 ms pulse actives Kick
+#define ADC_PIN             GPIO_NUM_23     // Digital out Pin: 100 ms pulse actives Kick
+
 // #define PWM_PIN             GPIO_NUM_23     // PWM Pin: Boost Converter Voltage Control
+
+
+#define ADC12B_TO_VOLT      (30/4095)
 
 
 
