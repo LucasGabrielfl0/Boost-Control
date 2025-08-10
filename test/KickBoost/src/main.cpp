@@ -11,12 +11,23 @@
 
 #define ADC_PIN           	GPIO_NUM_34     //
 
-#define PWM_PIN             GPIO_NUM_35     //
+#define PWM_PIN             GPIO_NUM_25     //
 #define PWM_CHANNEL         0               //
-#define PWM_FREQ            80e3            // PWM frequency: 80 Khz
-#define PWM_RES             12              // Resolution in bits, 12bits = [0 - 4095]
+#define PWM_FREQ            80000           // PWM frequency: 80 Khz
+#define PWM_RES             8               // Resolution in bits, 12bits = [0 - 255]
 
+// For Eficiency, generate every voltage Level as 12b number
+// #define BOOST_5V_12B        (uint16_t)( (5.00f/30.0f) * 4095.0f )       
+// #define BOOST_10V_12B       (uint16_t)( (10.0f/30.0f) * 4095.0f )
+// #define BOOST_15V_12B       (uint16_t)( (15.0f/30.0f) * 4095.0f )
+// #define BOOST_22V_12B       (uint16_t)( (22.0f/30.0f) * 4095.0f )
+// #define BOOST_26V_12B       (uint16_t)( (26.0f/30.0f) * 4095.0f )
 
+const uint16_t BOOST_5V_12B    =    (uint16_t)( (5.00f/30.0f) * 4095.0f );       
+const uint16_t BOOST_10V_12B   =    (uint16_t)( (10.0f/30.0f) * 4095.0f );
+const uint16_t BOOST_15V_12B   =    (uint16_t)( (15.0f/30.0f) * 4095.0f );
+const uint16_t BOOST_22V_12B   =    (uint16_t)( (22.0f/30.0f) * 4095.0f );
+const uint16_t BOOST_26V_12B   =    (uint16_t)( (26.0f/30.0f) * 4095.0f );
 
 
 const float ADC12B_TO_VOLT =      (30.0f/4095.0f);
@@ -36,17 +47,34 @@ void LED_Setup();
 void ADC_Setup();
 void Pulse_Setup();
 void PWM_Setup();
+void Timer_Setup();
 void Button_Setup();
 
 // Interrupt
-void IRAM_ATTR Button_ISR();        //
+void IRAM_ATTR Button_ISR();            //
+void IRAM_ATTR Control_ISR();           //
 
 // Aux Functions
-float Check_LEDs();                 // Read ADC and set LEDs
+uint16_t Check_LEDs();                 // Read ADC and set LEDs
+float Check_LEDs_DEBUG();                 // Read ADC and set LEDs
+
+// Control
+void BoostControl();
+
+// Tasks
 void PulseTask(void *params);       // Sets 100ms Pulse
 
-// Global Variables
+// Handles and special variables
 static TaskHandle_t PulseTaskHandle = NULL;     // Handle for the Notification
+hw_timer_t* control_timer = NULL;               // Timer for the control interrupt [100us Ts]
+
+// Global Variables
+uint16_t Vo_12b     = 0;
+uint16_t Duty_8b   = 0;
+// float ek[2];
+// float uk[2];
+
+
 
 void setup() {
     Serial.begin(115200);
@@ -56,6 +84,10 @@ void setup() {
     Pulse_Setup();
     ADC_Setup();
     Button_Setup();
+    
+    PWM_Setup();
+    // Timer_Setup();
+
 
     // Tasks and Interrupts
     xTaskCreate(PulseTask, "PulseTask", 2048, NULL, 1, &PulseTaskHandle);
@@ -64,32 +96,49 @@ void setup() {
 
 void loop() {
 	Check_LEDs();
-	vTaskDelay(pdMS_TO_TICKS(50));
+    BoostControl();
+    vTaskDelay(pdMS_TO_TICKS(50));
 }
 
+
+/* Pulse that Activates the solenoid, called from ISR*/
 void PulseTask(void *params)
 {
-    float CapVoltage =0;
+    uint16_t CapVoltage =0;
 	while(1) 
   	{
     	// Waits until Hardware ISR awakens it
     	ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        // Disables interrupt
+        
+        // Disables the Button Hardware interrupt
         detachInterrupt(BUTTON_PIN);
 
+        // Make sure the LED's are if you kick
         CapVoltage = Check_LEDs();
         DEBUG_PRINT("ISR CALLED");
 
-        // Only sets if its charged
-        if(CapVoltage>= 22 && CapVoltage < 26 )
+        // Only Kicks if its charged
+        if(CapVoltage>= BOOST_22V_12B && CapVoltage < BOOST_26V_12B )
         {
+            // Sets Pulse
+    	    digitalWrite(PULSE_PIN, HIGH);
             DEBUG_PRINT("PULSE STARTED");
-    	    digitalWrite(PULSE_PIN, HIGH);        // Turn on
-		    vTaskDelay(pdMS_TO_TICKS(100));       // Waits 100ms 
-    	    digitalWrite(PULSE_PIN, LOW);         // Turns off
-		    vTaskDelay(pdMS_TO_TICKS(500));       // Waits 500ms [Deboucing reasons, the robot doesnt get the ball back that fast] 
+        
+            // Only turns it off when the capacitor is below 10V
+            while(CapVoltage > BOOST_10V_12B)
+            {
+                // Checks LED's very 10ms [Polling]
+                CapVoltage = analogRead(ADC_PIN);
+		        vTaskDelay(pdMS_TO_TICKS(10)); 
+            }
+            
+            // Once the Voltage Drops below 10V, turns of pulse
+    	    digitalWrite(PULSE_PIN, LOW);
         }
-
+        
+        // Waits 500ms [Deboucing reasons, the robot doesnt get the ball back that fast] 
+		vTaskDelay(pdMS_TO_TICKS(500));
+        
         // Re-enable button interrupt
         attachInterrupt(BUTTON_PIN, Button_ISR, RISING);
     }
@@ -136,14 +185,19 @@ void PWM_Setup()
     ledcAttachPin(PWM_PIN, PWM_CHANNEL);
 }
 
-void TimerSetup()
+/* Timer setup (for the Control interrupt) */
+void Timer_Setup()
 {
-    
+    control_timer = timerBegin(0, 80, true);                        // Prescaler = 80 => 1 tick = 1µs (80 MHz / 80)
+    timerAttachInterrupt(control_timer, &Control_ISR, true);        // Attachs the Control Function and the timer
+    timerAlarmWrite(control_timer, 1000, true);                      // 100 ticks -> 100µs
+    timerAlarmEnable(control_timer);                                // Starts the timer
+
 }
 
 
 
-// Kick Button ISR
+/* Kick Button ISR */ 
 void IRAM_ATTR Button_ISR() {
     // Notify the pulse task from ISR
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -151,24 +205,59 @@ void IRAM_ATTR Button_ISR() {
     portYIELD_FROM_ISR(); // Yield if necessary
 }
 
+/* Control System ISR */
+void IRAM_ATTR Control_ISR() {
+    BoostControl();
+}
+
+void BoostControl()
+{
+    // Reads Boost Voltage
+    Vo_12b = analogRead(ADC_PIN);
+
+    // Apply Control Algorithm
+    Duty_8b = ( Vo_12b>>4 ); // maps [0 - 2049] in [0 - 255]
+
+    // Set PWM
+    ledcWrite(PWM_CHANNEL, Duty_8b);
+
+}
 
 
+// float Check_LEDs_DEBUG()
+// {
+//     // Read ADC
+//     uint16_t ADC12b = analogRead(ADC_PIN);
+//     float ADC_Volt = ((float)(ADC12b))*ADC12B_TO_VOLT;
 
-float Check_LEDs()
+//     DEBUG_PRINT("[BOOST CONVERTER]: Total Voltage: %.2f V\n",ADC_Volt);
+//     DEBUG_PRINT("[BOOST CONVERTER]: Total 12b: %dV\n",ADC12b);
+
+//     // Set LED's based on Voltage
+//     digitalWrite(LED1_5V_PIN , ADC_Volt >= 5.0);
+//     digitalWrite(LED2_10V_PIN, ADC_Volt >= 10.0);
+//     digitalWrite(LED3_15V_PIN, ADC_Volt >= 15.0);
+//     digitalWrite(LED4_22V_PIN, ADC_Volt >= 22.0);
+//     digitalWrite(LED5_26V_PIN, ADC_Volt >= 26.0);
+
+//     return ADC_Volt;
+// }
+
+
+uint16_t Check_LEDs()
 {
     // Read ADC
     uint16_t ADC12b = analogRead(ADC_PIN);
-    float ADC_Volt = ((float)(ADC12b))*ADC12B_TO_VOLT;
 
-    DEBUG_PRINT("[BOOST CONVERTER]: Total Voltage: %.2f V\n",ADC_Volt);
-    DEBUG_PRINT("[BOOST CONVERTER]: Total 12b: %dV\n",ADC12b);
+    DEBUG_PRINT("[BOOST CONVERTER]: Total Voltage: %.2f V\n",( ( (float)(ADC12b) )*ADC12B_TO_VOLT ));
+    // DEBUG_PRINT("[BOOST CONVERTER]: Total 12b: %dV\n", ADC12b);
 
     // Set LED's based on Voltage
-    digitalWrite(LED1_5V_PIN , ADC_Volt >= 5.0);
-    digitalWrite(LED2_10V_PIN, ADC_Volt >= 10.0);
-    digitalWrite(LED3_15V_PIN, ADC_Volt >= 15.0);
-    digitalWrite(LED4_22V_PIN, ADC_Volt >= 22.0);
-    digitalWrite(LED5_26V_PIN, ADC_Volt >= 26.0);
+    digitalWrite(LED1_5V_PIN , ADC12b >= BOOST_5V_12B);
+    digitalWrite(LED2_10V_PIN, ADC12b >= BOOST_10V_12B);
+    digitalWrite(LED3_15V_PIN, ADC12b >= BOOST_15V_12B);
+    digitalWrite(LED4_22V_PIN, ADC12b >= BOOST_22V_12B);
+    digitalWrite(LED5_26V_PIN, ADC12b >= BOOST_26V_12B);
 
-    return ADC_Volt;
+    return ADC12b;
 }
