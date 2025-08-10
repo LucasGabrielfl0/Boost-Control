@@ -7,10 +7,17 @@
 #define LED5_26V_PIN        GPIO_NUM_15     // Signals Capacitor Voltage > 26V
 
 #define PULSE_PIN           GPIO_NUM_23     //
-#define PWM_PIN             GPIO_NUM_35     //
 #define BUTTON_PIN          GPIO_NUM_5      //
 
 #define ADC_PIN           	GPIO_NUM_34     //
+
+#define PWM_PIN             GPIO_NUM_35     //
+#define PWM_CHANNEL         0               //
+#define PWM_FREQ            80e3            // PWM frequency: 80 Khz
+#define PWM_RES             12              // Resolution in bits, 12bits = [0 - 4095]
+
+
+
 
 const float ADC12B_TO_VOLT =      (30.0f/4095.0f);
 
@@ -28,6 +35,7 @@ const float ADC12B_TO_VOLT =      (30.0f/4095.0f);
 void LED_Setup();
 void ADC_Setup();
 void Pulse_Setup();
+void PWM_Setup();
 void Button_Setup();
 
 // Interrupt
@@ -122,7 +130,16 @@ void ADC_Setup()
 	pinMode(ADC_PIN, INPUT);
 
 }
+void PWM_Setup()
+{
+    ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RES);
+    ledcAttachPin(PWM_PIN, PWM_CHANNEL);
+}
 
+void TimerSetup()
+{
+    
+}
 
 
 
